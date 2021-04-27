@@ -34,6 +34,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MAX_NBRS 12
+
 /*
  * API functions start here
  */
@@ -60,6 +62,9 @@ static void *open_pdb_read(const char *filepath, const char *filetype,
   if (!fd) 
     return NULL;
   pdb = (pdbdata *)malloc(sizeof(pdbdata));
+  if (!pdb)
+    return NULL;
+  memset(pdb, 0, sizeof(pdbdata));
   pdb->fd = fd;
   pdb->meta = (molfile_metadata_t *) malloc(sizeof(molfile_metadata_t));
   memset(pdb->meta, 0, sizeof(molfile_metadata_t));
@@ -323,7 +328,13 @@ static int write_structure(void *v, int optflags,
   pdb->atomlist = (molfile_atom_t *)malloc(natoms*sizeof(molfile_atom_t));
   memcpy(pdb->atomlist, atoms, natoms*sizeof(molfile_atom_t));
 
-  /* If occ, bfactor, and insertion aren't given, we assign defaultvalues. */
+  /* If occ, bfactor, chain id and insertion aren't given, we assign defaultvalues. */
+  for (i=0; i<natoms; i++) {
+    if (!pdb->atomlist[i].chain[0]) {
+      pdb->atomlist[i].chain[0]=' ';
+      pdb->atomlist[i].chain[1]='\0';
+    }
+  }
   if (!(optflags & MOLFILE_OCCUPANCY)) {
     for (i=0; i<natoms; i++) pdb->atomlist[i].occupancy = 0.0f;
   }
@@ -345,8 +356,8 @@ static int write_structure(void *v, int optflags,
   if (!(optflags & MOLFILE_ATOMICNUMBER)) {
     for (i=0; i<natoms; i++) pdb->atomlist[i].atomicnumber = 0;
   }
+  pdb->nconect = ((optflags & MOLFILE_CONECT) ? natoms : 0);
 
-  /* TODO: put bonds into CONECT records? */
   return MOLFILE_SUCCESS;
 }
 
@@ -496,11 +507,39 @@ static void write_cryst1(FILE *fd, const molfile_timestep_t *ts) {
 }
 
 
+static int write_pdb_bonds(void *v, int nbonds, int *fromptr, int *toptr,
+                            float *bondorderptr,  int *bondtype,
+                            int nbondtypes, char **bondtypename) {
+  pdbdata *pdb = (pdbdata *)v;
+  pdb->nbonds = nbonds;
+  if (!fromptr || !toptr)
+    return MOLFILE_ERROR;
+  pdb->from = (int *)malloc(nbonds * sizeof(int));
+  if (!pdb->from)
+    return MOLFILE_ERROR;
+  pdb->to = (int *) malloc(nbonds * sizeof(int));
+  if (!pdb->to)
+    return MOLFILE_ERROR;
+  //set the pointers for use later
+  memcpy(pdb->from, fromptr, nbonds * sizeof(int));
+  memcpy(pdb->to, toptr, nbonds * sizeof(int));
+  return MOLFILE_SUCCESS;
+}
+
+
 static int write_timestep(void *v, const molfile_timestep_t *ts) {
   pdbdata *pdb = (pdbdata *)v; 
   const molfile_atom_t *atom;
   const float *pos;
   int i;
+  int j;
+  int k;
+  int from;
+  int to;
+  int fail;
+  int rc;
+  int *p;
+  int **conn;
   char elementsymbol[3];
 
   if (pdb->natoms == 0)
@@ -550,8 +589,52 @@ static int write_timestep(void *v, const molfile_timestep_t *ts) {
     ++atom;
     pos += 3;
   }
-  fprintf(pdb->fd, "END\n");
-
+  rc = 1;
+  if (pdb->nconect) {
+    conn = (int **)malloc(pdb->natoms * sizeof(int *));
+    fail = (!conn);
+    if (!fail) {
+      memset(conn, 0, pdb->natoms * sizeof(int *));
+      for (i = 0; !fail && i < pdb->natoms; ++i) {
+        conn[i] = (int *)malloc((MAX_NBRS + 1) * sizeof(int));
+        fail = (!conn[i]);
+        if (!fail)
+          memset(conn[i], 0, (MAX_NBRS + 1) * sizeof(int));
+      }
+    }
+    if (!fail) {
+      for (i = 0; i < pdb->nbonds; ++i) {
+        from = pdb->from[i] - 1;
+        to = pdb->to[i] - 1;
+        p = conn[from];
+        if (*p < MAX_NBRS)
+          conn[from][++(*p)] = to;
+        p = conn[to];
+        if (*p < MAX_NBRS)
+          conn[to][++(*p)] = from;
+      }
+      for (i = 0; rc > 0 && i < pdb->natoms; ++i) {
+        if (!conn[i][0]) continue;
+        rc = fprintf(pdb->fd, "CONECT%5d", i + 1);
+        for (j = 1; rc > 0 && j <= conn[i][0]; ++j)
+          rc = fprintf(pdb->fd, "%5d", conn[i][j] + 1);
+        if (rc > 0)
+          rc = fprintf(pdb->fd, "\n");
+      }
+    }
+    if (conn) {
+      for (i = 0; i < pdb->natoms; ++i)
+        free(conn[i]);
+      free(conn);
+    }
+  }
+  if (rc > 0)
+    fprintf(pdb->fd, "END\n");
+  else {
+    fprintf(stderr,
+      "PDB: Error encountered writing CONECT record %d; file may be incomplete.\n", i);
+    return MOLFILE_ERROR;
+  }
   return MOLFILE_SUCCESS;
 }
  
@@ -559,6 +642,8 @@ static void close_file_write(void *v) {
   pdbdata *pdb = (pdbdata *)v; 
   fclose(pdb->fd);
   free(pdb->atomlist);
+  free(pdb->from);
+  free(pdb->to);
   free(pdb);
 }
 
@@ -592,6 +677,7 @@ VMDPLUGIN_API int VMDPLUGIN_init() {
   plugin.close_file_read = close_pdb_read;
   plugin.open_file_write = open_file_write;
   plugin.write_structure = write_structure;
+  plugin.write_bonds = write_pdb_bonds;
   plugin.write_timestep = write_timestep;
   plugin.close_file_write = close_file_write;
   plugin.read_molecule_metadata = read_molecule_metadata;

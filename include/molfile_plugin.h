@@ -168,6 +168,7 @@ typedef struct {
 #if defined(DESRES_CTNUMBER)
 #define MOLFILE_CTNUMBER      0x0200 /**< ctnumber provided */
 #endif
+#define MOLFILE_CONECT        0x0400 /**< Add CONECT records to PDB output */
 #define MOLFILE_BADOPTIONS    0xFFFFFFFF /**< Detect badly behaved plugins */
                               
 /*@}*/
