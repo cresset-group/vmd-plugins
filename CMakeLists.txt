@@ -1,5 +1,6 @@
+cmake_minimum_required(VERSION 3.18)
+
 project(libVmdMolFilePlugins_project)
-cmake_minimum_required(VERSION 2.8)
 
 aux_source_directory(${CMAKE_CURRENT_SOURCE_DIR}/src SOURCES)
 
